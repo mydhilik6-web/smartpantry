@@ -82,6 +82,96 @@ function itemKey(item) {
   return [item.barcode || "", item.name, item.unit, item.expirationDate, Number(item.quantity || 0)].join("|").toLowerCase();
 }
 
+function listItemKey(item) {
+  return [item.name, item.unit, Number(item.quantity || 0), item.reason || ""].join("|").toLowerCase();
+}
+
+function hasMeaningfulMeal(meal) {
+  if (!meal) return false;
+  return Boolean(
+    String(meal.name || "").trim() ||
+      String(meal.sourceUrl || "").trim() ||
+      Number(meal.macros?.calories || 0) ||
+      Number(meal.macros?.protein || 0) ||
+      Number(meal.macros?.carbs || 0) ||
+      Number(meal.macros?.fat || 0)
+  );
+}
+
+function mergeMealPlan(apiPlan, localPlan) {
+  if (!localPlan?.length) return { plan: apiPlan, changed: false };
+  if (!apiPlan?.length) return { plan: localPlan, changed: true };
+
+  let changed = false;
+  const localByDay = new Map(localPlan.map((dayPlan) => [dayPlan.day, dayPlan]));
+  const apiDays = new Set(apiPlan.map((dayPlan) => dayPlan.day));
+  const merged = apiPlan.map((dayPlan) => {
+    const localDay = localByDay.get(dayPlan.day);
+    if (!localDay) return dayPlan;
+    const meals = { ...(dayPlan.meals || {}) };
+    for (const [mealType, localMeal] of Object.entries(localDay.meals || {})) {
+      if (!hasMeaningfulMeal(meals[mealType]) && hasMeaningfulMeal(localMeal)) {
+        meals[mealType] = localMeal;
+        changed = true;
+      }
+    }
+    return { ...dayPlan, meals };
+  });
+
+  for (const dayPlan of localPlan) {
+    if (!apiDays.has(dayPlan.day)) {
+      merged.push(dayPlan);
+      changed = true;
+    }
+  }
+
+  return { plan: merged, changed };
+}
+
+function mergeDailyLog(apiLog, localLog) {
+  if (!localLog || !Object.keys(localLog).length) return { log: apiLog, changed: false };
+  if (!apiLog || !Object.keys(apiLog).length) return { log: localLog, changed: true };
+
+  let changed = false;
+  const merged = { ...apiLog };
+  if (!merged.__macroGoals && localLog.__macroGoals) {
+    merged.__macroGoals = localLog.__macroGoals;
+    changed = true;
+  }
+
+  for (const [day, localDay] of Object.entries(localLog)) {
+    if (day === "__macroGoals") continue;
+    const apiDay = merged[day];
+    if (!apiDay) {
+      merged[day] = localDay;
+      changed = true;
+      continue;
+    }
+
+    const apiEntryKeys = new Set((apiDay.entries || []).map((entry) => entry.id || listItemKey(entry)));
+    const localEntries = (localDay.entries || []).filter((entry) => !apiEntryKeys.has(entry.id || listItemKey(entry)));
+    const apiExercise = apiDay.exercise || {};
+    const localExercise = localDay.exercise || {};
+    const shouldUseLocalExercise =
+      !String(apiExercise.type || "").trim() &&
+      !Number(apiExercise.minutes || 0) &&
+      !Number(apiExercise.caloriesBurned || 0) &&
+      (String(localExercise.type || "").trim() || Number(localExercise.minutes || 0) || Number(localExercise.caloriesBurned || 0));
+
+    if (localEntries.length || shouldUseLocalExercise || (!apiDay.notes && localDay.notes)) {
+      merged[day] = {
+        ...apiDay,
+        entries: [...localEntries, ...(apiDay.entries || [])],
+        exercise: shouldUseLocalExercise ? localExercise : apiDay.exercise,
+        notes: apiDay.notes || localDay.notes || "",
+      };
+      changed = true;
+    }
+  }
+
+  return { log: merged, changed };
+}
+
 async function migrateLocalItemsToApi(apiItems) {
   const localItems = readStoredLocalInventory();
   if (!localItems?.length) return { items: apiItems, migratedCount: 0 };
@@ -184,9 +274,19 @@ function writeLocalShoppingList(items) {
 
 export async function loadSavedShoppingList() {
   try {
-    const items = await apiRequest("/api/shopping-list");
+    const apiItems = await apiRequest("/api/shopping-list");
+    const localItems = readLocalShoppingList();
+    const apiKeys = new Set(apiItems.map((item) => item.id || listItemKey(item)));
+    const missingLocalItems = localItems.filter((item) => !apiKeys.has(item.id || listItemKey(item)));
+    const items = missingLocalItems.length ? [...missingLocalItems, ...apiItems] : apiItems;
+    if (missingLocalItems.length) {
+      await apiRequest("/api/shopping-list", {
+        method: "PUT",
+        body: JSON.stringify(items),
+      });
+    }
     writeLocalShoppingList(items);
-    return { items, mode: "SYNCED" };
+    return { items, mode: missingLocalItems.length ? `SYNCED +${missingLocalItems.length}` : "SYNCED" };
   } catch {
     return { items: readLocalShoppingList(), mode: "LOCAL ONLY" };
   }
@@ -230,9 +330,17 @@ function writeLocalMealPlan(plan) {
 
 export async function loadSavedMealPlan() {
   try {
-    const plan = await apiRequest("/api/meal-plan");
-    writeLocalMealPlan(plan);
-    return { plan, mode: "SYNCED" };
+    const apiPlan = await apiRequest("/api/meal-plan");
+    const localPlan = readLocalMealPlan();
+    const merged = mergeMealPlan(apiPlan, localPlan);
+    if (merged.changed) {
+      await apiRequest("/api/meal-plan", {
+        method: "PUT",
+        body: JSON.stringify(merged.plan),
+      });
+    }
+    writeLocalMealPlan(merged.plan);
+    return { plan: merged.plan, mode: merged.changed ? "SYNCED +LOCAL PLAN" : "SYNCED" };
   } catch {
     return { plan: readLocalMealPlan(), mode: "LOCAL ONLY" };
   }
@@ -265,9 +373,17 @@ function writeLocalDailyLog(log) {
 
 export async function loadDailyLog() {
   try {
-    const log = await apiRequest("/api/daily-log");
-    writeLocalDailyLog(log);
-    return { log, mode: "SYNCED" };
+    const apiLog = await apiRequest("/api/daily-log");
+    const localLog = readLocalDailyLog();
+    const merged = mergeDailyLog(apiLog, localLog);
+    if (merged.changed) {
+      await apiRequest("/api/daily-log", {
+        method: "PUT",
+        body: JSON.stringify(merged.log),
+      });
+    }
+    writeLocalDailyLog(merged.log);
+    return { log: merged.log, mode: merged.changed ? "SYNCED +LOCAL LOG" : "SYNCED" };
   } catch {
     return { log: readLocalDailyLog(), mode: "LOCAL ONLY" };
   }
