@@ -2,11 +2,13 @@
 
 ## Project State
 - React/Tailwind PWA served by `server.mjs` on port `8787`.
-- Inventory is stored in `data/inventory.json`.
-- Shopping list is stored separately in `data/shopping-list.json`.
-- Weekly meal plans are stored in `data/meal-plan.json`.
-- Daily food/exercise logs are stored in `data/daily-log.json`.
-- Deleted inventory ids are tombstoned in `data/deleted-item-ids.json`.
+- Production storage uses Supabase when `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` are configured.
+- Local development falls back to JSON files in `data/`.
+- Inventory store key: `inventory`.
+- Shopping list store key: `shoppingList`.
+- Weekly meal plan store key: `mealPlan`.
+- Daily food/exercise log store key: `dailyLog`.
+- Deleted inventory ids store key: `deletedItemIds`.
 - LocalStorage is fallback/cache only, not the source of truth when the API is reachable.
 
 ## Safety Rules
@@ -14,6 +16,17 @@
 - Before risky data changes, create a backup in `work/smartpantry/data/`.
 - Code changes should not mutate `data/inventory.json`.
 - If `/api/inventory` succeeds, the UI must show `SYNCED`, even if local cache migration skips tombstoned items.
+- Never expose `SUPABASE_SERVICE_ROLE_KEY` in client-side Vite code.
+- Do not commit `.env` files or `data/*.json`; user pantry, grocery, meal, and macro data should stay private.
+
+## Supabase Schema
+```sql
+create table if not exists smartpantry_store (
+  key text primary key,
+  value jsonb not null,
+  updated_at timestamptz not null default now()
+);
+```
 
 ## Inventory Schema
 ```ts

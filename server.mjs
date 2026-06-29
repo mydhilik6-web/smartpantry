@@ -1,17 +1,17 @@
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 
-const port = Number(process.env.PORT || 8787);
 const root = resolve(".");
+loadDotEnv(join(root, ".env"));
+const port = Number(process.env.PORT || 8787);
 const dataDir = join(root, "data");
-const dataFile = join(dataDir, "inventory.json");
-const deletedFile = join(dataDir, "deleted-item-ids.json");
-const shoppingFile = join(dataDir, "shopping-list.json");
-const mealPlanFile = join(dataDir, "meal-plan.json");
-const dailyLogFile = join(dataDir, "daily-log.json");
 const distDir = join(root, "dist");
+const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, "");
+const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseTable = process.env.SUPABASE_TABLE || "smartpantry_store";
+const useSupabase = Boolean(supabaseUrl && supabaseServiceRoleKey);
 
 const mimeTypes = {
   ".css": "text/css",
@@ -21,6 +21,21 @@ const mimeTypes = {
   ".svg": "image/svg+xml",
   ".webmanifest": "application/manifest+json",
 };
+
+function loadDotEnv(filePath) {
+  if (!existsSync(filePath)) return;
+  const lines = readFileSync(filePath, "utf8").split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const equalIndex = trimmed.indexOf("=");
+    if (equalIndex === -1) continue;
+    const key = trimmed.slice(0, equalIndex).trim();
+    const rawValue = trimmed.slice(equalIndex + 1).trim();
+    if (!key || process.env[key] !== undefined) continue;
+    process.env[key] = rawValue.replace(/^["']|["']$/g, "");
+  }
+}
 
 function offsetDate(days) {
   const date = new Date();
@@ -43,74 +58,126 @@ const seedInventory = [
   { id: "6", name: "Oat Milk", quantity: 1, unit: "carton", expirationDate: offsetDate(-1) },
 ];
 
-async function ensureDataFile() {
+const storeDefaults = {
+  inventory: seedInventory,
+  deletedItemIds: [],
+  shoppingList: [],
+  mealPlan: [],
+  dailyLog: {},
+};
+
+const localFiles = {
+  inventory: join(dataDir, "inventory.json"),
+  deletedItemIds: join(dataDir, "deleted-item-ids.json"),
+  shoppingList: join(dataDir, "shopping-list.json"),
+  mealPlan: join(dataDir, "meal-plan.json"),
+  dailyLog: join(dataDir, "daily-log.json"),
+};
+
+async function ensureLocalDataFiles() {
   await mkdir(dataDir, { recursive: true });
-  if (!existsSync(dataFile)) {
-    await writeFile(dataFile, JSON.stringify(seedInventory, null, 2));
+  for (const [key, filePath] of Object.entries(localFiles)) {
+    if (!existsSync(filePath)) {
+      await writeFile(filePath, JSON.stringify(storeDefaults[key], null, 2));
+    }
   }
-  if (!existsSync(deletedFile)) {
-    await writeFile(deletedFile, JSON.stringify([], null, 2));
+}
+
+function supabaseHeaders(extraHeaders = {}) {
+  return {
+    apikey: supabaseServiceRoleKey,
+    Authorization: `Bearer ${supabaseServiceRoleKey}`,
+    "Content-Type": "application/json",
+    ...extraHeaders,
+  };
+}
+
+function supabaseRestUrl(pathAndQuery) {
+  return `${supabaseUrl}/rest/v1/${pathAndQuery}`;
+}
+
+async function readCloudStore(key) {
+  const response = await fetch(supabaseRestUrl(`${supabaseTable}?key=eq.${encodeURIComponent(key)}&select=value`), {
+    headers: supabaseHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(`Supabase read failed for ${key}: ${response.status}`);
   }
-  if (!existsSync(shoppingFile)) {
-    await writeFile(shoppingFile, JSON.stringify([], null, 2));
+  const rows = await response.json();
+  if (rows.length) return rows[0].value;
+  await writeCloudStore(key, storeDefaults[key]);
+  return storeDefaults[key];
+}
+
+async function writeCloudStore(key, value) {
+  const response = await fetch(supabaseRestUrl(`${supabaseTable}?on_conflict=key`), {
+    method: "POST",
+    headers: supabaseHeaders({ Prefer: "resolution=merge-duplicates" }),
+    body: JSON.stringify([{ key, value, updated_at: new Date().toISOString() }]),
+  });
+  if (!response.ok) {
+    throw new Error(`Supabase write failed for ${key}: ${response.status}`);
   }
-  if (!existsSync(mealPlanFile)) {
-    await writeFile(mealPlanFile, JSON.stringify([], null, 2));
-  }
-  if (!existsSync(dailyLogFile)) {
-    await writeFile(dailyLogFile, JSON.stringify({}, null, 2));
-  }
+}
+
+async function readLocalStore(key) {
+  await ensureLocalDataFiles();
+  return JSON.parse(await readFile(localFiles[key], "utf8"));
+}
+
+async function writeLocalStore(key, value) {
+  await ensureLocalDataFiles();
+  await writeFile(localFiles[key], JSON.stringify(value, null, 2));
+}
+
+async function readStore(key) {
+  return useSupabase ? readCloudStore(key) : readLocalStore(key);
+}
+
+async function writeStore(key, value) {
+  return useSupabase ? writeCloudStore(key, value) : writeLocalStore(key, value);
 }
 
 async function readInventory() {
-  await ensureDataFile();
-  return JSON.parse(await readFile(dataFile, "utf8"));
+  return readStore("inventory");
 }
 
 async function writeInventory(items) {
-  await ensureDataFile();
-  await writeFile(dataFile, JSON.stringify(items, null, 2));
+  await writeStore("inventory", items);
 }
 
 async function readShoppingList() {
-  await ensureDataFile();
-  return JSON.parse(await readFile(shoppingFile, "utf8"));
+  return readStore("shoppingList");
 }
 
 async function writeShoppingList(items) {
-  await ensureDataFile();
-  await writeFile(shoppingFile, JSON.stringify(items, null, 2));
+  await writeStore("shoppingList", items);
 }
 
 async function readMealPlan() {
-  await ensureDataFile();
-  return JSON.parse(await readFile(mealPlanFile, "utf8"));
+  return readStore("mealPlan");
 }
 
 async function writeMealPlan(plan) {
-  await ensureDataFile();
-  await writeFile(mealPlanFile, JSON.stringify(plan, null, 2));
+  await writeStore("mealPlan", plan);
 }
 
 async function readDailyLog() {
-  await ensureDataFile();
-  return JSON.parse(await readFile(dailyLogFile, "utf8"));
+  return readStore("dailyLog");
 }
 
 async function writeDailyLog(log) {
-  await ensureDataFile();
-  await writeFile(dailyLogFile, JSON.stringify(log, null, 2));
+  await writeStore("dailyLog", log);
 }
 
 async function readDeletedIds() {
-  await ensureDataFile();
-  return new Set(JSON.parse(await readFile(deletedFile, "utf8")));
+  return new Set(await readStore("deletedItemIds"));
 }
 
 async function rememberDeletedId(id) {
   const deletedIds = await readDeletedIds();
   deletedIds.add(id);
-  await writeFile(deletedFile, JSON.stringify([...deletedIds], null, 2));
+  await writeStore("deletedItemIds", [...deletedIds]);
 }
 
 function readJsonBody(req) {
@@ -169,7 +236,7 @@ async function handleApi(req, res, url) {
   if (req.method === "OPTIONS") return send(res, 204, "");
 
   if (url.pathname === "/api/health") {
-    return send(res, 200, { ok: true });
+    return send(res, 200, { ok: true, storage: useSupabase ? "supabase" : "local-json" });
   }
 
   if (url.pathname === "/api/inventory" && req.method === "GET") {
