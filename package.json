@@ -10,6 +10,7 @@
     "dev": "vite",
     "api": "node server.mjs",
     "build": "vite build",
+    "migrate:api": "node scripts/migrate-local-data-to-api.mjs",
     "migrate:supabase": "node scripts/migrate-local-data-to-supabase.mjs",
     "start": "node server.mjs",
     "preview": "vite preview --host 0.0.0.0"

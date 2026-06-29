@@ -43,10 +43,18 @@ Add the environment variables above in Render's Environment tab. `SUPABASE_SERVI
 
 ## Migrating Local Data To Supabase
 
-If you already inventoried food locally, set the Supabase variables in a local `.env` or shell and run:
+If the Supabase variables are only set inside Render, upload your local `data/*.json` backup through the deployed app API. The API still writes into Supabase because Render has `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`; it does not persist this data on Render disk.
+
+First add a temporary `SMARTPANTRY_IMPORT_TOKEN` environment variable in Render and redeploy. Use any long random value. Then run this locally with the same token:
+
+```bash
+SMARTPANTRY_API_URL=https://your-render-app.onrender.com SMARTPANTRY_IMPORT_TOKEN=your-token pnpm migrate:api
+```
+
+If you have the Supabase variables available locally too, you can upload straight to Supabase instead:
 
 ```bash
 pnpm migrate:supabase
 ```
 
-The migration uploads existing `data/*.json` store files to Supabase. It does not delete or rewrite your local files.
+Both migration commands upload existing `data/*.json` store files. They do not delete or rewrite your local files.

@@ -12,6 +12,7 @@ const supabaseUrl = process.env.SUPABASE_URL?.replace(/\/$/, "");
 const supabaseServiceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const supabaseTable = process.env.SUPABASE_TABLE || "smartpantry_store";
 const useSupabase = Boolean(supabaseUrl && supabaseServiceRoleKey);
+const importToken = process.env.SMARTPANTRY_IMPORT_TOKEN;
 
 const mimeTypes = {
   ".css": "text/css",
@@ -180,6 +181,36 @@ async function rememberDeletedId(id) {
   await writeStore("deletedItemIds", [...deletedIds]);
 }
 
+async function readSnapshot() {
+  const [inventory, shoppingList, mealPlan, dailyLog, deletedItemIds] = await Promise.all([
+    readInventory(),
+    readShoppingList(),
+    readMealPlan(),
+    readDailyLog(),
+    readStore("deletedItemIds"),
+  ]);
+  return { inventory, shoppingList, mealPlan, dailyLog, deletedItemIds };
+}
+
+async function writeSnapshot(snapshot) {
+  if (!snapshot || typeof snapshot !== "object" || Array.isArray(snapshot)) {
+    throw new Error("Snapshot body must be an object");
+  }
+
+  await Promise.all([
+    Array.isArray(snapshot.inventory) ? writeInventory(snapshot.inventory) : Promise.resolve(),
+    Array.isArray(snapshot.shoppingList) ? writeShoppingList(snapshot.shoppingList) : Promise.resolve(),
+    Array.isArray(snapshot.mealPlan) ? writeMealPlan(snapshot.mealPlan) : Promise.resolve(),
+    snapshot.dailyLog && typeof snapshot.dailyLog === "object" && !Array.isArray(snapshot.dailyLog) ? writeDailyLog(snapshot.dailyLog) : Promise.resolve(),
+    Array.isArray(snapshot.deletedItemIds) ? writeStore("deletedItemIds", snapshot.deletedItemIds) : Promise.resolve(),
+  ]);
+}
+
+function hasImportAccess(req) {
+  if (!importToken) return false;
+  return req.headers.authorization === `Bearer ${importToken}`;
+}
+
 function readJsonBody(req) {
   return new Promise((resolveBody, rejectBody) => {
     let body = "";
@@ -237,6 +268,18 @@ async function handleApi(req, res, url) {
 
   if (url.pathname === "/api/health") {
     return send(res, 200, { ok: true, storage: useSupabase ? "supabase" : "local-json" });
+  }
+
+  if (url.pathname === "/api/snapshot" && req.method === "GET") {
+    if (!hasImportAccess(req)) return send(res, 403, { error: "Snapshot import is disabled or unauthorized" });
+    return send(res, 200, await readSnapshot());
+  }
+
+  if (url.pathname === "/api/snapshot" && req.method === "PUT") {
+    if (!hasImportAccess(req)) return send(res, 403, { error: "Snapshot import is disabled or unauthorized" });
+    const snapshot = await readJsonBody(req);
+    await writeSnapshot(snapshot);
+    return send(res, 200, await readSnapshot());
   }
 
   if (url.pathname === "/api/inventory" && req.method === "GET") {
