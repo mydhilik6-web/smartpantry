@@ -69,4 +69,10 @@ type NeededEntry = {
 - Meal Prep has clear-all and per-slot clear controls.
 - Clicking `Meal Done` copies that meal and its macros into the daily log while leaving the plan intact.
 - Daily logs track actual food, macros, calories burned, exercise type/minutes, and notes.
+- Food log entries should auto-fill estimated macros from planned meals and the local common-food macro library, while remaining manually editable.
 - Body recomposition tracking should emphasize planned vs actual calories/protein plus exercise burn, while avoiding medical claims.
+
+## GitHub
+- The local Git repo lives in `work/smartpantry`.
+- Do not commit `data/*.json`, `dist/`, or `node_modules/`; user pantry and nutrition data should stay private/local.
+- Add a GitHub remote only after the user provides the intended repository URL.
