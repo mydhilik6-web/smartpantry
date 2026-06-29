@@ -58,3 +58,12 @@ pnpm migrate:supabase
 ```
 
 Both migration commands upload existing `data/*.json` store files. They do not delete or rewrite your local files.
+
+For a one-file inventory restore after setting `SMARTPANTRY_IMPORT_TOKEN` in Render, this also works:
+
+```bash
+curl -X POST https://your-render-app.onrender.com/api/import \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-token" \
+  -d @data/inventory.json
+```

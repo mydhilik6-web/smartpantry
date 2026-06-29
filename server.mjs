@@ -206,6 +206,14 @@ async function writeSnapshot(snapshot) {
   ]);
 }
 
+async function writeImportPayload(payload) {
+  if (Array.isArray(payload)) {
+    await writeInventory(payload);
+    return;
+  }
+  await writeSnapshot(payload);
+}
+
 function hasImportAccess(req) {
   if (!importToken) return false;
   return req.headers.authorization === `Bearer ${importToken}`;
@@ -279,6 +287,13 @@ async function handleApi(req, res, url) {
     if (!hasImportAccess(req)) return send(res, 403, { error: "Snapshot import is disabled or unauthorized" });
     const snapshot = await readJsonBody(req);
     await writeSnapshot(snapshot);
+    return send(res, 200, await readSnapshot());
+  }
+
+  if (url.pathname === "/api/import" && req.method === "POST") {
+    if (!hasImportAccess(req)) return send(res, 403, { error: "Import is disabled or unauthorized" });
+    const payload = await readJsonBody(req);
+    await writeImportPayload(payload);
     return send(res, 200, await readSnapshot());
   }
 
